@@ -3,6 +3,8 @@
 __pycache__/
 *.pyc
 node_modules/
+.env
+.env.*
 data/cousub.zip
 data/cousub_shp/
 data/maine-cousubs-raw.geo.json

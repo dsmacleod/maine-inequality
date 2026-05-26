@@ -46,8 +46,8 @@
   #detail-head { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: .5rem; margin-bottom: .25rem; }
   #detail-town { font-size: 1.15rem; font-weight: 700; }
   #detail-county { color: var(--muted); font-size: .9rem; }
-  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: .5rem; margin: .75rem 0; }
-  @media (max-width: 480px) { .stats { grid-template-columns: 1fr; } }
+  .stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: .5rem; margin: .75rem 0; }
+  @media (min-width: 640px) { .stats { grid-template-columns: repeat(4, 1fr); } }
   .stat { border: 1px solid var(--line); border-radius: 6px; padding: .6rem .7rem; }
   .stat .label { font-size: .72rem; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; margin-bottom: .2rem; }
   .stat .value { font-size: 1.2rem; font-weight: 700; line-height: 1.15; }
@@ -86,7 +86,7 @@
   <div id="detail" class="empty">Click a town on the map or search above to see its trend.</div>
 
   <footer>
-    Source: U.S. Census Bureau, American Community Survey 5-year estimates (table B19083). Years are the end of each 5-year window. Towns with small populations have wider margins of error.
+    Source: U.S. Census Bureau, American Community Survey 5-year estimates (tables B19083 for inequality, B19013 for median household income). Years are the end of each 5-year window. Towns with small populations have wider margins of error.
     <details><summary>How the score works</summary>
       <p>The income inequality score (technically the Gini index) measures how evenly income is shared in a place. A score of 0 means everyone earns exactly the same; a score of 1 means a single household earns everything. Real places fall in between — Maine as a whole is around 0.45.</p>
     </details>
@@ -113,6 +113,10 @@ function colorFor(v) {
   return b < 0 ? "var(--c-na)" : BUCKET_COLORS[b];
 }
 function fmt(v, d = 3) { return v == null ? "—" : v.toFixed(d); }
+function fmtMoney(v) {
+  if (v == null) return "—";
+  return "$" + Math.round(v).toLocaleString("en-US");
+}
 
 const state = { data: null, geo: null, byGeoid: {}, selected: null };
 
@@ -127,6 +131,9 @@ async function load() {
     state.byGeoid = Object.fromEntries(data.places.map(p => [p.geoid, p]));
     buildSearchList();
     renderMap();
+    // Deep-link: ?town=GEOID auto-selects a town on load.
+    const urlGeoid = new URLSearchParams(location.search).get("town");
+    if (urlGeoid && state.byGeoid[urlGeoid]) selectTown(urlGeoid);
   } catch (e) {
     document.getElementById("map").textContent = "Couldn't load data.";
     console.error(e);
@@ -239,6 +246,9 @@ function renderDetail(p) {
   const change = last - first;
   const stateLast = maine[maine.length - 1];
   const vsMaine = last - stateLast;
+  const stateMhi = state.data.maine.mhi;
+  const mhi = p.mhi;
+  const mhiVsStatePct = (mhi != null && stateMhi) ? Math.round((mhi - stateMhi) / stateMhi * 100) : null;
 
   // Town rank among all places with latest data
   const ranked = state.data.places
@@ -253,6 +263,9 @@ function renderDetail(p) {
                                 : "grown more equal since";
   const vsMaineVerb = Math.abs(vsMaine) < 0.005 ? "about the same as"
                    : vsMaine > 0 ? "wider than" : "narrower than";
+  const mhiSub = mhi == null ? "Not enough data"
+              : mhiVsStatePct === 0 ? "Even with Maine median"
+              : `${Math.abs(mhiVsStatePct)}% ${mhiVsStatePct > 0 ? "above" : "below"} Maine`;
 
   detail.innerHTML = `
     <div id="detail-head">
@@ -261,7 +274,12 @@ function renderDetail(p) {
     </div>
     <div class="stats">
       <div class="stat">
-        <div class="label">Latest score (${lastYear})</div>
+        <div class="label">Median household income</div>
+        <div class="value">${fmtMoney(mhi)}</div>
+        <div class="sub">${mhiSub}</div>
+      </div>
+      <div class="stat">
+        <div class="label">Inequality score (${lastYear})</div>
         <div class="value">${fmt(last)}</div>
         <div class="sub">Maine: ${fmt(stateLast)}</div>
       </div>
@@ -277,7 +295,7 @@ function renderDetail(p) {
       </div>
     </div>
     <div id="trend"></div>
-    <p class="narrative">${p.name}'s income gap has <strong>${trendVerb}</strong> ${firstYear}, and is now <strong>${vsMaineVerb}</strong> the Maine state average.</p>
+    <p class="narrative">${p.name}'s income gap has <strong>${trendVerb}</strong> ${firstYear}, and is now <strong>${vsMaineVerb}</strong> the Maine state average.${mhi != null ? ` The typical household here earns <strong>${fmtMoney(mhi)}</strong>.` : ""}</p>
   `;
   renderTrend(years, series, maine);
 }
@@ -311,11 +329,15 @@ function renderTrend(years, series, maine) {
     `<g class="axis"><line x1="${pad.l}" x2="${W - pad.r}" y1="${yScale(v)}" y2="${yScale(v)}" stroke-dasharray="2 3"/><text x="${pad.l - 6}" y="${yScale(v) + 3}" text-anchor="end">${v.toFixed(2)}</text></g>`
   ).join("");
 
-  // X axis: first, middle, last
-  const xIdxs = [0, Math.floor((xs.length - 1) / 2), xs.length - 1];
-  const xAxis = xIdxs.map(i =>
-    `<text class="axis" x="${xScale(i)}" y="${H - 6}" text-anchor="middle">${xs[i]}</text>`
-  ).join("");
+  // X axis: first, middle, last. Use start/middle/end anchors so the
+  // endpoint labels don't get clipped when the SVG is stretched horizontally.
+  const lastI = xs.length - 1;
+  const midI = Math.floor(lastI / 2);
+  const xAxis = [
+    `<text class="axis" x="${xScale(0)}" y="${H - 6}" text-anchor="start">${xs[0]}</text>`,
+    `<text class="axis" x="${xScale(midI)}" y="${H - 6}" text-anchor="middle">${xs[midI]}</text>`,
+    `<text class="axis" x="${xScale(lastI)}" y="${H - 6}" text-anchor="end">${xs[lastI]}</text>`,
+  ].join("");
 
   // Town points (only where data present)
   const pts = series.map((v, i) => v == null ? "" :
@@ -327,7 +349,7 @@ function renderTrend(years, series, maine) {
     <path d="${buildPath(maine)}" fill="none" stroke="#999" stroke-width="1.5" stroke-dasharray="4 3"/>
     <path d="${buildPath(series)}" fill="none" stroke="var(--bdn-green)" stroke-width="2.25"/>
     ${pts}
-    <g class="axis"><text x="${W - pad.r}" y="${yScale(maine[maine.length - 1]) - 6}" text-anchor="end">Maine</text></g>
+    <g class="axis"><text x="${W - pad.r - 2}" y="${yScale(maine[maine.length - 1]) - 6}" text-anchor="end">Maine</text></g>
   </svg>`;
   document.getElementById("trend").innerHTML = svg;
 }
